@@ -2,6 +2,9 @@ package co.doneservices.callkeep
 
 import android.Manifest
 import android.app.Activity
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.*
 import android.content.pm.PackageManager
 import android.graphics.drawable.Icon
@@ -12,6 +15,7 @@ import android.telecom.*
 import android.telephony.TelephonyManager
 import android.util.Log
 import androidx.core.app.ActivityCompat
+import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import io.flutter.plugin.common.MethodCall
@@ -20,11 +24,13 @@ import io.flutter.plugin.common.PluginRegistry
 import io.wazo.callkeep.Constants
 import io.wazo.callkeep.VoiceConnection
 import io.wazo.callkeep.VoiceConnectionService
+import kotlin.collections.HashMap
 
 private const val E_ACTIVITY_DOES_NOT_EXIST = "E_ACTIVITY_DOES_NOT_EXIST"
 
 private const val TAG = "CallKeep:CallKeepPlugin"
 private const val REQUEST_READ_PHONE_STATE = 58251
+private const val NOTIFICATION_ID = 38496
 
 private val requiredPermissions = arrayOf(Manifest.permission.READ_PHONE_STATE, Manifest.permission.CALL_PHONE, Manifest.permission.RECORD_AUDIO)
 
@@ -56,7 +62,6 @@ class CallKeep(private val channel: MethodChannel, private var applicationContex
     private fun hasPhoneAccount(): Boolean {
         return isConnectionServiceAvailable() && telecomManager!!.getPhoneAccount(handle).isEnabled
     }
-
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
             "setup" -> {
@@ -142,6 +147,14 @@ class CallKeep(private val channel: MethodChannel, private var applicationContex
             }
             "backToForeground" -> {
                 backToForeground(result)
+            }
+            "displayCustomIncomingCall" -> {
+                displayCustomIncomingCall(call.argument("packageName")!!, call.argument("className")!!, call.argument("icon")!!, call.argument("extra")!!, call.argument("contentTitle")!!, call.argument("answerText")!!, call.argument("declineText")!!, call.argument("ringtoneUri"))
+                result.success(null)
+            }
+            "dismissCustomIncomingCall" -> {
+                dismissCustomIncomingCall()
+                result.success(null)
             }
             "isCurrentDeviceSupported" -> {
                 isCurrentDeviceSupported(result)
@@ -383,6 +396,65 @@ class CallKeep(private val channel: MethodChannel, private var applicationContex
         result.success(null)
     }
 
+    private fun displayCustomIncomingCall(packageName: String, className: String, icon: String, extra: HashMap<String, String>, contentTitle: String, answerText: String, declineText: String, ringtoneUri: String?) {
+        val notificationManager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+        var launchIntent = Intent()
+        launchIntent.setClassName(packageName, "$packageName.$className")
+        launchIntent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK)
+        launchIntent.putExtra("co.doneservices.callkeep.NOTIFICATION_ID", NOTIFICATION_ID)
+
+        for ((key, value) in extra) {
+            launchIntent.putExtra(key, value)
+        }
+
+        var answerIntent = Intent()
+        answerIntent.putExtra("co.doneservices.callkeep.ACTION", "answer")
+        answerIntent.setClassName(packageName, "$packageName.$className")
+        for ((key, value) in extra) {
+            answerIntent.putExtra(key, value)
+        }
+
+        var declineIntent = Intent()
+        declineIntent.putExtra("co.doneservices.callkeep.ACTION", "decline")
+        declineIntent.setClassName(packageName, "$packageName.$className")
+        for ((key, value) in extra) {
+            declineIntent.putExtra(key, value)
+        }
+        
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel("incoming_calls", "Incoming Calls", NotificationManager.IMPORTANCE_HIGH)
+            notificationManager.createNotificationChannel(channel)
+        }
+
+        val pendingIntent = PendingIntent.getActivity(applicationContext, 0, launchIntent, PendingIntent.FLAG_CANCEL_CURRENT)
+        val builder = NotificationCompat.Builder(applicationContext, "incoming_calls")
+
+        builder.setSmallIcon(applicationContext.resources.getIdentifier(icon, "drawable", applicationContext.packageName))
+        builder.setFullScreenIntent(pendingIntent, true)
+        builder.setOngoing(true)
+        builder.setCategory(NotificationCompat.CATEGORY_CALL)
+        builder.setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+        builder.setPriority(NotificationCompat.PRIORITY_MAX)
+        builder.setAutoCancel(true)
+
+        if (ringtoneUri != null) {
+            builder.setSound(Uri.parse(ringtoneUri))
+        }
+
+        builder.setContentTitle(contentTitle)
+        builder.addAction(0, declineText, PendingIntent.getActivity(applicationContext, 1, declineIntent, PendingIntent.FLAG_CANCEL_CURRENT))
+        builder.addAction(0, answerText, PendingIntent.getActivity(applicationContext, 2, answerIntent, PendingIntent.FLAG_CANCEL_CURRENT))
+
+        notificationManager.notify(NOTIFICATION_ID, builder.build())
+    }
+
+    private fun dismissCustomIncomingCall() {
+        val notificationManager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.cancel(NOTIFICATION_ID)
+    }
+
     private fun isCurrentDeviceSupported(result: MethodChannel.Result) {
         result.success(isConnectionServiceAvailable());
     }
@@ -443,6 +515,9 @@ class CallKeep(private val channel: MethodChannel, private var applicationContex
         isReceiverRegistered = true
     }
 
+
+    /// VideoBroadcastReceiver gets events from VoiceConnectionService
+    /// it then invokes methods on the Flutter app
     private inner class VoiceBroadcastReceiver : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             Log.i(TAG, "Received action: ${intent.action}")

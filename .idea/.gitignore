@@ -1,0 +1,7 @@
+# Project exclude paths
+/.
+*.iml
+libraries
+modules.xml
+workspace.xml
+
